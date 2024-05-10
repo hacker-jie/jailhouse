@@ -1,0 +1,46 @@
+From 03d07e0f703987b8437969caadc30916aa0f9cbe Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Sat, 26 Sep 2020 12:28:43 +0200
+Subject: [PATCH 09/11] arm-common: Improve PSCI documentation
+
+Describe what happens around CPU_SUSPEND and use the official symbolic
+return code. Also explain what is (not) returned from CPU_OFF.
+
+No functional changes.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm-common/psci.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/hypervisor/arch/arm-common/psci.c b/hypervisor/arch/arm-common/psci.c
+index 242cad5b..916a6db9 100644
+--- a/hypervisor/arch/arm-common/psci.c
++++ b/hypervisor/arch/arm-common/psci.c
+@@ -101,16 +101,21 @@ long psci_dispatch(struct trap_context *ctx)
+ 
+ 	case PSCI_0_2_FN_CPU_SUSPEND:
+ 	case PSCI_0_2_FN64_CPU_SUSPEND:
++		/*
++		 * Note: We ignore the power_state parameter and always perform
++		 * a context-preserving suspend. This is legal according to
++		 * PSCI.
++		 */
+ 		if (!irqchip_has_pending_irqs()) {
+ 			asm volatile("wfi" : : : "memory");
+ 			irqchip_handle_irq();
+ 		}
+-		return 0;
++		return PSCI_SUCCESS;
+ 
+ 	case PSCI_0_2_FN_CPU_OFF:
+ 	case PSCI_CPU_OFF_V0_1_UBOOT:
+ 		arm_cpu_park();
+-		return 0;
++		return 0; /* never returned to the PSCI caller */
+ 
+ 	case PSCI_0_2_FN_CPU_ON:
+ 	case PSCI_0_2_FN64_CPU_ON:
+-- 
+2.34.1
+

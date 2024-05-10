@@ -1,0 +1,86 @@
+From f97e8528200c5800a0a2e24494b2451592e1453f Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Sat, 26 Sep 2020 12:31:42 +0200
+Subject: [PATCH 10/11] arm-common: Handle SDEI case in PSCI CPU_SUSPEND
+
+When suspending the CPU while interrupts are passed through, we cannot
+simply call wfi as EL2 is not receiving interrupts as wakeup events -
+the CPU would starve.
+
+Factor out arm_cpu_passthru_suspend to handle this case by enabling IMO
+and FMO before calling wfi. That ensures that EL2 will resume, and as
+interrupts are off in that mode, the events will simply be carried to
+EL1 when clearing IMO/FMO before returning.
+
+For ARM, arm_cpu_passthru_suspend remains empty as there is no SDEI.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm-common/include/asm/control.h |  1 +
+ hypervisor/arch/arm-common/psci.c                |  4 +++-
+ hypervisor/arch/arm/control.c                    |  5 +++++
+ hypervisor/arch/arm64/control.c                  | 11 +++++++++++
+ 4 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/hypervisor/arch/arm-common/include/asm/control.h b/hypervisor/arch/arm-common/include/asm/control.h
+index 9a5eaba7..acebef32 100644
+--- a/hypervisor/arch/arm-common/include/asm/control.h
++++ b/hypervisor/arch/arm-common/include/asm/control.h
+@@ -31,6 +31,7 @@ unsigned int arm_cpu_by_mpidr(struct cell *cell, unsigned long mpidr);
+ 
+ void arm_cpu_reset(unsigned long pc, bool aarch32);
+ void arm_cpu_park(void);
++void arm_cpu_passthru_suspend(void);
+ 
+ #endif /* !__ASSEMBLY__ */
+ 
+diff --git a/hypervisor/arch/arm-common/psci.c b/hypervisor/arch/arm-common/psci.c
+index 916a6db9..a0f0b6a7 100644
+--- a/hypervisor/arch/arm-common/psci.c
++++ b/hypervisor/arch/arm-common/psci.c
+@@ -106,7 +106,9 @@ long psci_dispatch(struct trap_context *ctx)
+ 		 * a context-preserving suspend. This is legal according to
+ 		 * PSCI.
+ 		 */
+-		if (!irqchip_has_pending_irqs()) {
++		if (sdei_available) {
++			arm_cpu_passthru_suspend();
++		} else if (!irqchip_has_pending_irqs()) {
+ 			asm volatile("wfi" : : : "memory");
+ 			irqchip_handle_irq();
+ 		}
+diff --git a/hypervisor/arch/arm/control.c b/hypervisor/arch/arm/control.c
+index 0e7a1b54..46125e1a 100644
+--- a/hypervisor/arch/arm/control.c
++++ b/hypervisor/arch/arm/control.c
+@@ -101,3 +101,8 @@ void arch_panic_park(void)
+ 	arm_write_banked_reg(ELR_hyp, 0);
+ }
+ #endif
++
++void arm_cpu_passthru_suspend(void)
++{
++	/* never called */
++}
+diff --git a/hypervisor/arch/arm64/control.c b/hypervisor/arch/arm64/control.c
+index 3cb5c3f8..5b41b393 100644
+--- a/hypervisor/arch/arm64/control.c
++++ b/hypervisor/arch/arm64/control.c
+@@ -99,3 +99,14 @@ void arch_panic_park(void)
+ 	arm_write_sysreg(ELR_EL2, 0);
+ }
+ #endif
++
++void arm_cpu_passthru_suspend(void)
++{
++	unsigned long hcr;
++
++	arm_read_sysreg(HCR_EL2, hcr);
++	arm_write_sysreg(HCR_EL2, hcr | HCR_IMO_BIT | HCR_FMO_BIT);
++	isb();
++	asm volatile("wfi" : : : "memory");
++	arm_write_sysreg(HCR_EL2, hcr);
++}
+-- 
+2.34.1
+

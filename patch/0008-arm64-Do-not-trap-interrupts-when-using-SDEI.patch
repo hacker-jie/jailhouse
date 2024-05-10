@@ -1,0 +1,29 @@
+From 31b3017324624b02a6731d9a5c6194208e7b3e3e Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Fri, 4 Sep 2020 21:00:30 +0200
+Subject: [PATCH 08/11] arm64: Do not trap interrupts when using SDEI
+
+They can (and must) be delivered directly to the cell in that mode. GIC
+CPU interfaces are already passed through.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm64/setup.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/hypervisor/arch/arm64/setup.c b/hypervisor/arch/arm64/setup.c
+index d8c58504..376648e3 100644
+--- a/hypervisor/arch/arm64/setup.c
++++ b/hypervisor/arch/arm64/setup.c
+@@ -74,6 +74,8 @@ int arch_cpu_init(struct per_cpu *cpu_data)
+ 
+ 		if (smc(SDEI_PE_UNMASK) != ARM_SMCCC_SUCCESS)
+ 			return trace_error(-EIO);
++
++		hcr &= ~(HCR_IMO_BIT | HCR_FMO_BIT);
+ 	}
+ 
+ 	/* Setup guest traps */
+-- 
+2.34.1
+

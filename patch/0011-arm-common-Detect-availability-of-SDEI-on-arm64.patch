@@ -1,0 +1,136 @@
+From ee0e5c42c9baf1389481c372693cd8fab0e1cb88 Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Fri, 4 Sep 2020 21:09:43 +0200
+Subject: [PATCH 11/11] arm-common: Detect availability of SDEI on arm64
+
+Enhance smccc_discover() to detect if SDEI is available on all CPUs on
+arm64. Fail on inconsistent availability, now returning and error code.
+
+SDEI is practically only available on arm64 and also only implemented
+there in Jailhouse. So skip the probing on 32-bit.
+
+This activates the previously introduced SDEI paths.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ .../arch/arm-common/include/asm/smccc.h       |  5 +++-
+ hypervisor/arch/arm-common/setup.c            |  6 ++++-
+ hypervisor/arch/arm-common/smccc.c            | 25 +++++++++++++++----
+ 3 files changed, 29 insertions(+), 7 deletions(-)
+
+diff --git a/hypervisor/arch/arm-common/include/asm/smccc.h b/hypervisor/arch/arm-common/include/asm/smccc.h
+index fdfe49a2..871244c1 100644
+--- a/hypervisor/arch/arm-common/include/asm/smccc.h
++++ b/hypervisor/arch/arm-common/include/asm/smccc.h
+@@ -17,6 +17,7 @@
+ #define SMCCC_ARCH_WORKAROUND_1		0x80008000
+ #define SMCCC_ARCH_WORKAROUND_2		0x80007fff
+ 
++#define SDEI_VERSION			0xc4000020
+ #define SDEI_EVENT_REGISTER		0xc4000021
+ #define SDEI_EVENT_ENABLE		0xc4000022
+ #define SDEI_EVENT_COMPLETE		0xc4000025
+@@ -25,6 +26,8 @@
+ #define SDEI_PE_UNMASK			0xc400002c
+ #define SDEI_EVENT_SIGNAL		0xc400002f
+ 
++#define ARM_SMCCC_VERSION_1_0		0x1000000000000L
++
+ #define SDEI_EV_HANDLED			0
+ 
+ #define ARM_SMCCC_OWNER_MASK		BIT_MASK(29, 24)
+@@ -53,7 +56,7 @@ struct trap_context;
+ 
+ extern bool sdei_available;
+ 
+-void smccc_discover(void);
++int smccc_discover(void);
+ enum trap_return handle_smc(struct trap_context *ctx);
+ 
+ #endif /* !__ASSEMBLY__ */
+diff --git a/hypervisor/arch/arm-common/setup.c b/hypervisor/arch/arm-common/setup.c
+index c16fe27a..9ff03250 100644
+--- a/hypervisor/arch/arm-common/setup.c
++++ b/hypervisor/arch/arm-common/setup.c
+@@ -39,12 +39,16 @@ int arm_init_early(void)
+ 
+ int arm_cpu_init(struct per_cpu *cpu_data)
+ {
++	int err;
++
+ 	cpu_data->public.mpidr = phys_processor_id();
+ 
+ 	arm_write_sysreg(VTCR_EL2, VTCR_CELL);
+ 	arm_paging_vcpu_init(&root_cell.arch.mm);
+ 
+-	smccc_discover();
++	err = smccc_discover();
++	if (err)
++		return err;
+ 
+ 	return irqchip_cpu_init(cpu_data);
+ }
+diff --git a/hypervisor/arch/arm-common/smccc.c b/hypervisor/arch/arm-common/smccc.c
+index 3958b061..65639b59 100644
+--- a/hypervisor/arch/arm-common/smccc.c
++++ b/hypervisor/arch/arm-common/smccc.c
+@@ -19,7 +19,9 @@
+ 
+ bool sdei_available;
+ 
+-void smccc_discover(void)
++static bool sdei_probed __attribute__((__unused__));
++
++int smccc_discover(void)
+ {
+ 	struct per_cpu *cpu_data = this_cpu_data();
+ 	long ret;
+@@ -32,28 +34,41 @@ void smccc_discover(void)
+ 	/* We need >=PSCIv1.0 for SMCCC. Against the spec, U-Boot may also
+ 	 * return a negative error code. */
+ 	if (ret < 0 || PSCI_VERSION_MAJOR(ret) < 1)
+-		return;
++		return sdei_available ? trace_error(-EIO) : 0;
+ 
+ 	/* Check if PSCI supports SMCCC version call */
+ 	ret = smc_arg1(PSCI_1_0_FN_FEATURES, SMCCC_VERSION);
+ 	if (ret != ARM_SMCCC_SUCCESS)
+-		return;
++		return sdei_available ? trace_error(-EIO) : 0;
++
++#ifdef __aarch64__
++	/* Check if we have SDEI (ARMv8 only) */
++	ret = smc(SDEI_VERSION);
++	if (ret >= ARM_SMCCC_VERSION_1_0) {
++		if (sdei_probed && !sdei_available)
++			return trace_error(-EIO);
++		sdei_available = true;
++	}
++	sdei_probed = true;
++#endif
+ 
+ 	/* We need to have at least SMCCC v1.1 */
+ 	ret = smc(SMCCC_VERSION);
+ 	if (ret < ARM_SMCCC_VERSION_1_1)
+-		return;
++		return 0;
+ 
+ 	/* check if SMCCC_ARCH_FEATURES is actually available */
+ 	ret = smc_arg1(SMCCC_ARCH_FEATURES, SMCCC_ARCH_FEATURES);
+ 	if (ret != ARM_SMCCC_SUCCESS)
+-		return;
++		return 0;
+ 
+ 	cpu_data->smccc_feat_workaround_1 =
+ 		smc_arg1(SMCCC_ARCH_FEATURES, SMCCC_ARCH_WORKAROUND_1);
+ 
+ 	cpu_data->smccc_feat_workaround_2 =
+ 		smc_arg1(SMCCC_ARCH_FEATURES, SMCCC_ARCH_WORKAROUND_2);
++
++	return 0;
+ }
+ 
+ static inline long handle_arch_features(u32 id)
+-- 
+2.34.1
+

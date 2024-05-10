@@ -1,0 +1,116 @@
+From 4d41e47391385220c796aba6728382a5a37485f0 Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Fri, 4 Sep 2020 19:26:24 +0200
+Subject: [PATCH 06/11] arm-common: Pass through GIC CPU interface in SDEI mode
+
+When SDEI is used for management interrupts, we can give the gicc
+completely to the cell. This requires to skip gic-v2 and gic-v3 per-cpu
+initializations and to map the physical gicc-v2 into the cell or to not
+enable ICH_HCR_EN in case of gic-v3. Furthermore, injected interrupts
+now have to be sent as physical SGI to the target, rather than being
+queued for the virtual interface.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm-common/gic-v2.c  | 16 +++++++++++-----
+ hypervisor/arch/arm-common/gic-v3.c  |  6 +++++-
+ hypervisor/arch/arm-common/irqchip.c |  5 +++++
+ 3 files changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/hypervisor/arch/arm-common/gic-v2.c b/hypervisor/arch/arm-common/gic-v2.c
+index 6a86ca8c..31371de9 100644
+--- a/hypervisor/arch/arm-common/gic-v2.c
++++ b/hypervisor/arch/arm-common/gic-v2.c
+@@ -15,6 +15,7 @@
+ #include <asm/gic.h>
+ #include <asm/gic_v2.h>
+ #include <asm/irqchip.h>
++#include <asm/smccc.h>
+ 
+ /* The GICv2 interface numbering does not necessarily match the logical map */
+ static u8 gicv2_target_cpu_map[8];
+@@ -120,6 +121,9 @@ static int gicv2_cpu_init(struct per_cpu *cpu_data)
+ 	if (gicv2_target_cpu_map[cpu_data->public.cpu_id] == 0)
+ 		return trace_error(-ENODEV);
+ 
++	if (sdei_available)
++		return 0;
++
+ 	/* Ensure all IPIs and the maintenance PPI are enabled. */
+ 	mmio_write32(gicd_base + GICD_ISENABLER, 0x0000ffff | (1 << mnt_irq));
+ 
+@@ -225,17 +229,19 @@ static void gicv2_eoi_irq(u32 irq_id, bool deactivate)
+ static int gicv2_cell_init(struct cell *cell)
+ {
+ 	/*
+-	 * Let the guest access the virtual CPU interface instead of the
+-	 * physical one.
++	 * Without SDEI management interrrupts, let the guest access the
++	 * virtual CPU interface instead of the physical.
+ 	 *
+ 	 * WARN: some SoCs (EXYNOS4) use a modified GIC which doesn't have any
+ 	 * banked CPU interface, so we should map per-CPU physical addresses
+ 	 * here.
+ 	 * As for now, none of them seem to have virtualization extensions.
+ 	 */
+-	return paging_create(&cell->arch.mm,
+-			     system_config->platform_info.arm.gicv_base,
+-			     GICC_SIZE,
++	u64 gic_source = sdei_available ?
++		system_config->platform_info.arm.gicc_base :
++		system_config->platform_info.arm.gicv_base;
++
++	return paging_create(&cell->arch.mm, gic_source, GICC_SIZE,
+ 			     system_config->platform_info.arm.gicc_base,
+ 			     (PTE_FLAG_VALID | PTE_ACCESS_FLAG |
+ 			      S2_PTE_ACCESS_RW | S2_PTE_FLAG_DEVICE),
+diff --git a/hypervisor/arch/arm-common/gic-v3.c b/hypervisor/arch/arm-common/gic-v3.c
+index 126f4524..4ebb2357 100644
+--- a/hypervisor/arch/arm-common/gic-v3.c
++++ b/hypervisor/arch/arm-common/gic-v3.c
+@@ -19,6 +19,7 @@
+ #include <asm/gic.h>
+ #include <asm/gic_v3.h>
+ #include <asm/irqchip.h>
++#include <asm/smccc.h>
+ #include <asm/sysregs.h>
+ #include <asm/traps.h>
+ 
+@@ -244,6 +245,9 @@ static int gicv3_cpu_init(struct per_cpu *cpu_data)
+ 	if ((cpu_data->public.mpidr & MPIDR_AFF0_MASK) >= 16)
+ 		return trace_error(-EIO);
+ 
++	if (sdei_available)
++		return 0;
++
+ 	/* Ensure all IPIs and the maintenance PPI are enabled. */
+ 	gicr = redist_base + GICR_SGI_BASE;
+ 	mmio_write32(gicr + GICR_ISENABLER, 0x0000ffff | (1 << mnt_irq));
+@@ -303,7 +307,7 @@ static int gicv3_cpu_shutdown(struct public_per_cpu *cpu_public)
+ {
+ 	u32 ich_vmcr, icc_ctlr, cell_icc_igrpen1;
+ 
+-	if (!cpu_public->gicr.base)
++	if (sdei_available || !cpu_public->gicr.base)
+ 		return -ENODEV;
+ 
+ 	arm_write_sysreg(ICH_HCR_EL2, 0);
+diff --git a/hypervisor/arch/arm-common/irqchip.c b/hypervisor/arch/arm-common/irqchip.c
+index da03c96a..a3245846 100644
+--- a/hypervisor/arch/arm-common/irqchip.c
++++ b/hypervisor/arch/arm-common/irqchip.c
+@@ -228,6 +228,11 @@ void irqchip_set_pending(struct public_per_cpu *cpu_public, u16 irq_id)
+ 	const u16 sender = this_cpu_id();
+ 	unsigned int new_tail;
+ 
++	if (sdei_available) {
++		irqchip_send_sgi(cpu_public->cpu_id, irq_id);
++		return;
++	}
++
+ 	if (local_injection && irqchip.inject_irq(irq_id, sender) != -EBUSY)
+ 		return;
+ 
+-- 
+2.34.1
+

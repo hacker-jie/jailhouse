@@ -1,0 +1,37 @@
+From 275e855a0b75c03c9162c6a3bb4fe7414bf7e37e Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Mon, 27 Jul 2020 10:30:14 +0200
+Subject: [PATCH 04/11] arm64: Reorder arch_cpu_init
+
+This will allow to modify the hcr value based on the result of
+arm_cpu_init when SDEI is in play.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm64/setup.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hypervisor/arch/arm64/setup.c b/hypervisor/arch/arm64/setup.c
+index a24bf1d7..58c90276 100644
+--- a/hypervisor/arch/arm64/setup.c
++++ b/hypervisor/arch/arm64/setup.c
+@@ -58,13 +58,13 @@ int arch_cpu_init(struct per_cpu *cpu_data)
+ 	/* switch to the permanent page tables */
+ 	enable_mmu_el2(paging_hvirt2phys(cpu_data->pg_structs.root_table));
+ 
+-	/* Setup guest traps */
+-	arm_write_sysreg(HCR_EL2, hcr);
+-
+ 	err = arm_cpu_init(cpu_data);
+ 	if (err)
+ 		return err;
+ 
++	/* Setup guest traps */
++	arm_write_sysreg(HCR_EL2, hcr);
++
+ 	/* Conditionally switch to hardened vectors */
+ 	if (this_cpu_data()->smccc_feat_workaround_1 >= ARM_SMCCC_SUCCESS)
+ 		arm_write_sysreg(vbar_el2, &hyp_vectors_hardened);
+-- 
+2.34.1
+

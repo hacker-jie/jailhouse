@@ -1,0 +1,118 @@
+From 467e6524fd2f2f58ea11fa7966695cc9d4048bec Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Wed, 2 Sep 2020 09:12:28 +0200
+Subject: [PATCH 05/11] arm-common: Add SDEI-based management event injection
+ support
+
+This is the first building block for switching to management interrupts
+using the Software Delegated Exception Interface (SDEI) which will allow
+to pass the GICC to the guest.
+
+In this step, the feature flag is introduced - but not yet set -, and
+arch_send_event is augmented with sending the event via
+SDEI_EVENT_SIGNAL, software event 0.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+---
+ hypervisor/arch/arm-common/control.c           | 9 +++++++--
+ hypervisor/arch/arm-common/include/asm/smccc.h | 6 ++++++
+ hypervisor/arch/arm-common/irqchip.c           | 5 ++++-
+ hypervisor/arch/arm-common/smccc.c             | 2 ++
+ 4 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/hypervisor/arch/arm-common/control.c b/hypervisor/arch/arm-common/control.c
+index ea6d6534..9fc42761 100644
+--- a/hypervisor/arch/arm-common/control.c
++++ b/hypervisor/arch/arm-common/control.c
+@@ -15,8 +15,10 @@
+ #include <jailhouse/control.h>
+ #include <jailhouse/printk.h>
+ #include <asm/control.h>
+-#include <asm/psci.h>
+ #include <asm/iommu.h>
++#include <asm/psci.h>
++#include <asm/smc.h>
++#include <asm/smccc.h>
+ 
+ static void enter_cpu_off(struct public_per_cpu *cpu_public)
+ {
+@@ -40,7 +42,10 @@ void arm_cpu_park(void)
+ 
+ void arch_send_event(struct public_per_cpu *target_data)
+ {
+-	irqchip_send_sgi(target_data->cpu_id, SGI_EVENT);
++	if (sdei_available)
++		smc_arg2(SDEI_EVENT_SIGNAL, 0, target_data->mpidr);
++	else
++		irqchip_send_sgi(target_data->cpu_id, SGI_EVENT);
+ }
+ 
+ void arch_reset_cpu(unsigned int cpu_id)
+diff --git a/hypervisor/arch/arm-common/include/asm/smccc.h b/hypervisor/arch/arm-common/include/asm/smccc.h
+index 069beecb..0d1ecd86 100644
+--- a/hypervisor/arch/arm-common/include/asm/smccc.h
++++ b/hypervisor/arch/arm-common/include/asm/smccc.h
+@@ -10,11 +10,15 @@
+  * the COPYING file in the top-level directory.
+  */
+ 
++#include <jailhouse/types.h>
++
+ #define SMCCC_VERSION			0x80000000
+ #define SMCCC_ARCH_FEATURES		0x80000001
+ #define SMCCC_ARCH_WORKAROUND_1		0x80008000
+ #define SMCCC_ARCH_WORKAROUND_2		0x80007fff
+ 
++#define SDEI_EVENT_SIGNAL		0xc400002f
++
+ #define ARM_SMCCC_OWNER_MASK		BIT_MASK(29, 24)
+ #define ARM_SMCCC_OWNER_SHIFT		24
+ 
+@@ -39,6 +43,8 @@
+ 
+ struct trap_context;
+ 
++extern bool sdei_available;
++
+ void smccc_discover(void);
+ enum trap_return handle_smc(struct trap_context *ctx);
+ 
+diff --git a/hypervisor/arch/arm-common/irqchip.c b/hypervisor/arch/arm-common/irqchip.c
+index eb9ac40f..da03c96a 100644
+--- a/hypervisor/arch/arm-common/irqchip.c
++++ b/hypervisor/arch/arm-common/irqchip.c
+@@ -22,7 +22,7 @@
+ #include <asm/control.h>
+ #include <asm/gic.h>
+ #include <asm/irqchip.h>
+-#include <asm/sysregs.h>
++#include <asm/smccc.h>
+ 
+ #define for_each_irqchip(chip, config, counter)				\
+ 	for ((chip) = jailhouse_cell_irqchips(config), (counter) = 0;	\
+@@ -529,6 +529,9 @@ static unsigned int irqchip_mmio_count_regions(struct cell *cell)
+ 
+ static int irqchip_init(void)
+ {
++	if (sdei_available)
++		printk("Using SDEI-based management interrupt\n");
++
+ 	/* Setup the SPI bitmap */
+ 	return irqchip_cell_init(&root_cell);
+ }
+diff --git a/hypervisor/arch/arm-common/smccc.c b/hypervisor/arch/arm-common/smccc.c
+index 6bffcfb1..3958b061 100644
+--- a/hypervisor/arch/arm-common/smccc.c
++++ b/hypervisor/arch/arm-common/smccc.c
+@@ -17,6 +17,8 @@
+ #include <asm/smc.h>
+ #include <asm/smccc.h>
+ 
++bool sdei_available;
++
+ void smccc_discover(void)
+ {
+ 	struct per_cpu *cpu_data = this_cpu_data();
+-- 
+2.34.1
+
